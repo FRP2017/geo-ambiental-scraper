@@ -1,0 +1,6 @@
+streamlit
+google-cloud-storage
+google-cloud-bigquery
+db-dtypes
+pandas
+selenium>=4.10.0
