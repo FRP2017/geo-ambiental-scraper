@@ -4,7 +4,7 @@ import logging
 import traceback
 import io
 import re
-import requests  # <--- Modificación: Importación necesaria
+import requests
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
@@ -62,7 +62,6 @@ def ejecutar_scrapping(nombre_proyecto, titular, fecha_presentacion, bucket_name
         
         driver = webdriver.Chrome(options=options)
         
-        # Habilitar descargas incluso en modo Headless
         driver.execute_cdp_cmd("Page.setDownloadBehavior", {
             "behavior": "allow", 
             "downloadPath": download_dir
@@ -75,7 +74,7 @@ def ejecutar_scrapping(nombre_proyecto, titular, fecha_presentacion, bucket_name
         ventana_busqueda = driver.current_window_handle
         
         input_proyecto = wait.until(EC.presence_of_element_located((By.ID, "projectName")))
-        input_proyecto.send_keys(nombre_proyecto)
+        input_proyecto.send_keys(nombre_proyecto) # Usamos el nombre tal cual llega
         
         input_titular = driver.find_element(By.ID, "nombreTitular")
         input_titular.send_keys(titular)
@@ -88,15 +87,19 @@ def ejecutar_scrapping(nombre_proyecto, titular, fecha_presentacion, bucket_name
         
         driver.execute_script("arguments[0].click();", driver.find_element(By.CSS_SELECTOR, "button.sg-btnForm"))
         
-        time.sleep(5) # PAUSA MANTENIDA
+        time.sleep(5) 
         
         # 2. DESCARGA EXCEL
-        link_excel = wait.until(EC.element_to_be_clickable((By.LINK_TEXT, "Descargar en formato Excel")))
-        driver.execute_script("arguments[0].click();", link_excel)
-        time.sleep(2) # PAUSA MANTENIDA
+        try:
+            link_excel = wait.until(EC.element_to_be_clickable((By.LINK_TEXT, "Descargar en formato Excel")))
+            driver.execute_script("arguments[0].click();", link_excel)
+            time.sleep(2)
+        except:
+            pass
 
         # 3. NAVEGACIÓN A FICHA
-        link_expediente = wait.until(EC.element_to_be_clickable((By.PARTIAL_LINK_TEXT, nombre_proyecto)))
+        # --- MODIFICACIÓN ÚNICA: Selector robusto para el primer enlace de la tabla ---
+        link_expediente = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "td.dt-head-center a.color-primary")))
         driver.execute_script("arguments[0].click();", link_expediente)
         
         wait.until(EC.number_of_windows_to_be(2))
@@ -106,7 +109,7 @@ def ejecutar_scrapping(nombre_proyecto, titular, fecha_presentacion, bucket_name
                 break
         
         ventana_ficha = driver.current_window_handle
-        time.sleep(5) # PAUSA MANTENIDA
+        time.sleep(5) 
         
         html_ficha = driver.page_source
         nombre_ficha = "ficha_principal.html"
@@ -115,7 +118,7 @@ def ejecutar_scrapping(nombre_proyecto, titular, fecha_presentacion, bucket_name
         blob_ficha.upload_from_string(html_ficha, content_type='text/html')
 
         #######################################################################
-        # 🚀 LOOP DE EXTRACCIÓN MODIFICADO CON REQUESTS PARA PDF
+        # 🚀 LOOP DE EXTRACCIÓN CON REQUESTS PARA PDF
         #######################################################################
         enlaces_en_tabla = driver.find_elements(By.CSS_SELECTOR, "td.td-primary a")
         num_docs = len(enlaces_en_tabla)
@@ -128,35 +131,21 @@ def ejecutar_scrapping(nombre_proyecto, titular, fecha_presentacion, bucket_name
                 nombre_doc_original = link_elem.text.strip()
                 nombre_limpio = limpiar_nombre_archivo(nombre_doc_original)
                 
-                # --- MODIFICACIÓN: PDF vía Requests Robusto ---
                 if "firma.sea.gob.cl" in url_documento:
                     nombre_final = f"DOC_{index+1}_{nombre_limpio}.pdf"
-                    logger.info(f"Descargando PDF robusto: {nombre_final}")
-                    
-                    # Preparar sesión clonando a Selenium
                     session = requests.Session()
                     user_agent = driver.execute_script("return navigator.userAgent;")
-                    session.headers.update({
-                        "User-Agent": user_agent,
-                        "Referer": driver.current_url
-                    })
+                    session.headers.update({"User-Agent": user_agent, "Referer": driver.current_url})
                     for cookie in driver.get_cookies():
                         session.cookies.set(cookie['name'], cookie['value'])
                     
-                    # Ejecutar descarga
                     res = session.get(url_documento, timeout=30)
                     content_type = res.headers.get('Content-Type', '').lower()
                     
-                    # Verificación de integridad (No descargar si es HTML/Error)
                     if res.status_code == 200 and 'application/pdf' in content_type:
                         blob = bucket.blob(f"{nombre_proyecto}/documentos_detalle/{nombre_final}")
-                        blob.content_disposition = f'attachment; filename="{nombre_final}"'
                         blob.upload_from_string(res.content, content_type='application/pdf')
-                        logger.info(f"✅ PDF guardado: {nombre_final}")
-                    else:
-                        logger.error(f"❌ PDF Corrupto o Error: {nombre_final} (Tipo: {content_type})")
                 
-                # HTML (Se mantiene lógica original)
                 else:
                     driver.execute_script("arguments[0].click();", link_elem)
                     wait.until(EC.number_of_windows_to_be(3))
@@ -164,28 +153,25 @@ def ejecutar_scrapping(nombre_proyecto, titular, fecha_presentacion, bucket_name
                         if handle != ventana_busqueda and handle != ventana_ficha:
                             driver.switch_to.window(handle)
                             break
-                    time.sleep(3) # PAUSA MANTENIDA
+                    time.sleep(3)
                     html_doc = driver.page_source
                     nombre_archivo = f"DOC_{index+1}_{nombre_limpio}.html"
                     blob = bucket.blob(f"{nombre_proyecto}/documentos_detalle/{nombre_archivo}")
-                    blob.content_disposition = f'attachment; filename="{nombre_archivo}"'
                     blob.upload_from_string(html_doc, content_type='text/html')
                     driver.close()
                     driver.switch_to.window(ventana_ficha)
                 
-                time.sleep(3) # PAUSA MANTENIDA
+                time.sleep(3)
 
-            except Exception as e:
+            except Exception:
                 if len(driver.window_handles) > 2: driver.close()
                 driver.switch_to.window(ventana_ficha)
                 time.sleep(2)
 
-        # Finalización Excel (Se mantiene lógica original)
         for f in os.listdir(download_dir):
             if f.endswith(".xlsx"):
                 ruta_local = os.path.join(download_dir, f)
                 blob_xlsx = bucket.blob(f"{nombre_proyecto}/{f}")
-                blob_xlsx.content_disposition = f'attachment; filename="{f}"'
                 blob_xlsx.upload_from_filename(ruta_local)
                 os.remove(ruta_local)
                 break
