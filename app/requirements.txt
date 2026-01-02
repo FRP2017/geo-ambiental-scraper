@@ -1,6 +1,8 @@
-streamlit
+streamlit>=1.41.0
 google-cloud-storage
 google-cloud-bigquery
 db-dtypes
 pandas
 selenium>=4.10.0
+folium
+streamlit-folium

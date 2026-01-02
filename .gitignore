@@ -1,0 +1,19 @@
+# Python y Entorno
+venv/
+**/__pycache__/
+*.pyc
+
+# Aplicación (App)
+app/downloads/
+estructura_proyecto.txt
+
+# Terraform (Infraestructura y Secretos)
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/*.tfstate*
+terraform/terraform.tfvars
+
+# Sistema e IDEs
+.DS_Store
+.vscode/
+.idea/

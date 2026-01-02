@@ -17,7 +17,6 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Copiar requerimientos e instalar dependencias de Python
-# AQUÍ ESTABA EL ERROR: Asegúrate de que no haya nada después de requirements.txt
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
@@ -27,5 +26,9 @@ COPY . .
 # Exponer puerto para Streamlit
 EXPOSE 8080
 
-# Ejecución
-CMD ["streamlit", "run", "app.py", "--server.port=8080", "--server.address=0.0.0.0"]
+# --- MODIFICACIÓN AQUÍ PARA CLOUD RUN ---
+CMD ["streamlit", "run", "app.py", \
+    "--server.port=8080", \
+    "--server.address=0.0.0.0", \
+    "--server.enableCORS=false", \
+    "--server.enableXsrfProtection=false"]
