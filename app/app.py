@@ -79,11 +79,44 @@ if st.session_state.df_resultados is not None:
                 nombre_limpio = row['nombre_original'].replace("(e-seia)", "").strip()
                 with st.status(f"Procesando: {nombre_limpio}") as status:
                     # AQUÍ ESTÁ EL CONTRATO QUE NO DEBO ROMPER:
-                    res, logs = ejecutar_scrapping(row['id'], nombre_limpio, row['titular'], row['fecha_presentacion'], row['fecha_calificacion'], BUCKET_NAME)
-                    
+                    res, logs, excel_path = ejecutar_scrapping(
+                                                                row['id'], 
+                                                                nombre_limpio, 
+                                                                row['titular'], 
+                                                                row['fecha_presentacion'], 
+                                                                row['fecha_calificacion'], 
+                                                                BUCKET_NAME
+                                                            )
                     # --- NUEVO BLOQUE DE LÓGICA DE RESULTADOS ---
                     if "✅ EXITOSO" in res:
-                        status.update(label=f"✅ Finalizado: {nombre_limpio}", state="complete")
+                    
+                    
+                        # 2. NUEVA LÓGICA: Sincronizar BigQuery con el Excel descargado
+                        if excel_path:
+                            ok_upd, msg_upd = dm.actualizar_desde_excel(
+                                bq_client, 
+                                BQ_TABLE_PATH, 
+                                row['id'], 
+                                excel_path
+                            )
+                            
+                            # 3. LIMPIEZA: Borramos el archivo local después de actualizar BQ
+                            if os.path.exists(excel_path):
+                                os.remove(excel_path)
+
+                            if ok_upd:
+                                status.update(label=f"✅ Datos Sincronizados: {nombre_limpio}", state="complete")
+                            else:
+                                status.update(label=f"⚠️ Error en Sincronización: {nombre_limpio}", state="error")
+                                st.error(f"Error al actualizar BigQuery: {msg_upd}")
+                        else:
+                            status.update(label=f"✅ Finalizado (Sin Excel): {nombre_limpio}", state="complete")                    
+
+
+
+
+
+
                     
                     elif "⚠️ SIN RESULTADOS" in res:
                         # Si el scraper devuelve que la tabla está vacía

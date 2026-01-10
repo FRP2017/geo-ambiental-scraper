@@ -36,3 +36,75 @@ def filtrar_dataframe(df, filtros):
     df_f = df_f[(df_f['distancia_km'] >= filtros['distancia'][0]) & 
                 (df_f['distancia_km'] <= filtros['distancia'][1])]
     return df_f
+
+def actualizar_desde_excel(client, table_path, id_interno, excel_path):
+    # Mapeo de columnas (Excel -> BigQuery)
+    mapping = {
+        'Nombre del Proyecto': 'nombre_proyecto',
+        'Tipo de Presentación': 'tipo_presentacion',
+        'Región': 'region',
+        'Comuna': 'comuna',
+        'Provincia': 'provincia',
+        'Tipo de Proyecto': 'tipo_proyecto',
+        'Razón de Ingreso': 'razon_ingreso',
+        'Titular': 'titular',
+        'Inversión (MMU$)': 'inversion_mmu',
+        'Fecha Presentación': 'fecha_presentacion',
+        'Estado del Proyecto': 'estado_proyecto',
+        'Fecha Calificación': 'fecha_calificacion',
+        'Sector Productivo': 'sector_productivo',
+        'Latitud Punto Representativo': 'latitud',
+        'Longitud Punto Representativo': 'longitud'
+    }
+
+    try:
+        # 1. Leer Excel
+        df = pd.read_excel(excel_path)
+        if df.empty: return False, "Excel vacío"
+        
+        row = df.iloc[0]
+        set_clauses = []
+
+        for excel_col, bq_col in mapping.items():
+            valor = row.get(excel_col)
+            
+            # --- TRATAMIENTO ESPECIAL DE FECHAS ---
+            if "Fecha" in excel_col:
+                if pd.isna(valor) or str(valor).strip() == "":
+                    set_clauses.append(f"{bq_col} = NULL")
+                else:
+                    try:
+                        # Convertimos a datetime y luego a string formato ISO BQ
+                        dt_obj = pd.to_datetime(valor)
+                        fecha_iso = dt_obj.strftime('%Y-%m-%d %H:%M:%S')
+                        set_clauses.append(f"{bq_col} = '{fecha_iso}'")
+                    except:
+                        set_clauses.append(f"{bq_col} = NULL")
+                continue
+
+            # --- TRATAMIENTO DE NÚMEROS (Inversión, Lat, Lon) ---
+            if bq_col in ['inversion_mmu', 'latitud', 'longitud']:
+                if pd.isna(valor):
+                    set_clauses.append(f"{bq_col} = NULL")
+                else:
+                    set_clauses.append(f"{bq_col} = {valor}")
+                continue
+
+            # --- TRATAMIENTO DE STRINGS ---
+            if pd.isna(valor):
+                set_clauses.append(f"{bq_col} = NULL")
+            else:
+                val_str = str(valor).replace("'", "''") # Escapar comillas
+                set_clauses.append(f"{bq_col} = '{val_str}'")
+
+        # Agregar timestamp de actualización
+        set_clauses.append("fecha_actualizacion = CURRENT_TIMESTAMP()")
+
+        # 2. Ejecutar Update
+        query = f"UPDATE `{table_path}` SET {', '.join(set_clauses)} WHERE id = '{id_interno}'"
+        client.query(query).result()
+        
+        return True, "Actualización exitosa"
+
+    except Exception as e:
+        return False, f"Error en procesamiento de datos: {str(e)}"

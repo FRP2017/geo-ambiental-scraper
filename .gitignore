@@ -2,7 +2,7 @@
 venv/
 **/__pycache__/
 *.pyc
-
+*.csv
 # Aplicación (App)
 app/downloads/
 estructura_proyecto.txt
@@ -17,3 +17,4 @@ terraform/terraform.tfvars
 .DS_Store
 .vscode/
 .idea/
+

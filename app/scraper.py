@@ -11,7 +11,8 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from google.cloud import storage
-
+from bs4 import BeautifulSoup
+import pandas as pd
 # ==========================================
 # 1. UTILIDADES Y CONFIGURACIÓN
 # ==========================================
@@ -31,8 +32,8 @@ def limpiar_nombre_archivo(nombre):
 
 def configurar_driver(download_dir):
     options = Options()
-    options.add_argument('--headless=new') # Descomentar para Cloud Run
-    options.add_argument('--no-sandbox')
+    #options.add_argument('--headless=new') # Descomentar para Cloud Run
+    #options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-gpu')
     options.add_argument('--window-size=1920,1080')
@@ -133,6 +134,108 @@ def procesar_documentos_detalle(driver, wait, bucket, id_proyecto, v_busqueda, v
             driver.switch_to.window(v_ficha)
     return num_docs
 
+
+from bs4 import BeautifulSoup
+import pandas as pd
+
+def procesar_expediente_evaluacion(driver, wait, bucket, id_proyecto, v_busqueda, v_ficha):
+    logger = logging.getLogger("scraper")
+    fecha_maxima_exp = None  # Variable para guardar la fecha
+    
+    try:
+        # 1. Navegar a la pestaña Expediente
+        tab_xpath = "//a[contains(@href, 'listadoExpediente') or contains(text(), 'Expediente')]"
+        tab_boton = wait.until(EC.element_to_be_clickable((By.XPATH, tab_xpath)))
+        driver.execute_script("arguments[0].click();", tab_boton)
+        time.sleep(6) 
+
+        # 2. Localizar Tabla (Lógica de test.py con Iframes)
+        tabla_obj = None
+        try:
+            tabla_obj = wait.until(EC.presence_of_element_located((By.XPATH, "//table")))
+        except:
+            iframes = driver.find_elements(By.TAG_NAME, "iframe")
+            for i, frame in enumerate(iframes):
+                driver.switch_to.frame(frame)
+                tablas_internas = driver.find_elements(By.TAG_NAME, "table")
+                if tablas_internas:
+                    tabla_obj = tablas_internas[0]
+                    break
+                driver.switch_to.default_content()
+
+        if not tabla_obj:
+            logger.warning("No se encontró la tabla de expediente.")
+            return 0, None
+
+        # 3. Extraer HTML y Calcular Fecha Máxima (Columna 7)
+        codigo_html = tabla_obj.get_attribute('outerHTML')
+        df = pd.read_html(io.StringIO(codigo_html))[0]
+        fechas_col = pd.to_datetime(df.iloc[:, 6], dayfirst=True, errors='coerce')
+        fecha_maxima_exp = fechas_col.max()
+        
+        f_max_log = fecha_maxima_exp.strftime('%d/%m/%Y') if not pd.isnull(fecha_maxima_exp) else "N/A"
+        logger.info(f"📅 FECHA MÁXIMA ENCONTRADA: {f_max_log}")
+
+        # 4. Preparar sesión de descarga
+        session = requests.Session()
+        for c in driver.get_cookies(): session.cookies.set(c['name'], c['value'])
+
+        # 5. Iterar filas para descargas
+        soup = BeautifulSoup(codigo_html, 'html.parser')
+        filas = soup.find_all('tr')
+        docs_ok = 0
+
+        for fila in filas:
+            columnas = fila.find_all('td')
+            if not columnas: continue
+            
+            id_fila = columnas[0].get_text(strip=True)
+            link = fila.find('a')
+            if not link or not link.get('href', '').startswith('https'):
+                continue
+
+            url_doc = link.get('href')
+            nombre_doc = link.get_text(strip=True) or (link.find('img').get('title') if link.find('img') else "documento")
+            nombre_final = f"EXP_{id_fila}_{limpiar_nombre_archivo(nombre_doc)}"
+
+            try:
+                # Metodología A: PDF/Requests
+                if ".pdf" in url_doc.lower() or "bajar" in url_doc.lower():
+                    res = session.get(url_doc, timeout=30)
+                    blob = bucket.blob(f"{id_proyecto}/expediente/{nombre_final}.pdf")
+                    blob.content_disposition = f'attachment; filename="{nombre_final}.pdf"'
+
+                    blob.upload_from_string(res.content, content_type='application/pdf')
+                    docs_ok += 1
+                
+                # Metodología B: HTML/Selenium
+                else:
+                    driver.execute_script(f"window.open('{url_doc}', '_blank');")
+                    driver.switch_to.window(driver.window_handles[-1])
+                    time.sleep(5)
+                    html_src = driver.page_source
+                    blob = bucket.blob(f"{id_proyecto}/expediente/{nombre_final}.html")
+
+                    blob.content_disposition = f'attachment; filename="{nombre_final}.html"'
+
+                    blob.upload_from_string(html_src, content_type='text/html')
+                    docs_ok += 1
+                    driver.close()
+                    driver.switch_to.window(v_ficha)
+                    # Intentar re-entrar al iframe por si se perdió el foco
+                    try: driver.switch_to.frame(driver.find_elements(By.TAG_NAME, "iframe")[0])
+                    except: pass
+            except Exception as e:
+                logger.error(f"Error en {nombre_final}: {e}")
+                if len(driver.window_handles) > 2: driver.close()
+                driver.switch_to.window(v_ficha)
+
+        return docs_ok, fecha_maxima_exp
+
+    except Exception as e:
+        logger.error(f"Fallo en expediente: {e}")
+        return 0, None
+    
 # ==========================================
 # 4. FUNCIÓN PRINCIPAL (ORQUESTADOR)
 # ==========================================
@@ -162,25 +265,18 @@ def ejecutar_scrapping(id_proyecto, nombre_proyecto, titular, fecha_presentacion
         realizar_busqueda(driver, wait, nombre_proyecto, titular, fecha_p_str, fecha_c_str)
         ventana_busqueda = driver.current_window_handle
 
-
-        # --- NUEVA LÓGICA: DETECCIÓN DE TABLA VACÍA ---
-        # Buscamos si aparece la celda que indica "No hay datos disponibles"
+        # --- DETECCIÓN DE TABLA VACÍA ---
         celda_vacia = driver.find_elements(By.CSS_SELECTOR, "td.dt-empty")
         if celda_vacia:
-            # Construimos una lista con los 4 parámetros para que Streamlit los lea bien
             params_err = (
                 f"1. **Nombre:** {nombre_proyecto}\n"
                 f"2. **Titular:** {titular}\n"
                 f"3. **F. Presentación:** {fecha_p_str}\n"
             )
-            # Solo agregamos el 4to parámetro si existe
-            if fecha_c_str:
-                params_err += f"4. **F. Calificación:** {fecha_c_str}"
-            else:
-                params_err += "4. **F. Calificación:** (No provista)"
+            if fecha_c_str: params_err += f"4. **F. Calificación:** {fecha_c_str}"
+            else: params_err += "4. **F. Calificación:** (No provista)"
             
-            return f"⚠️ SIN RESULTADOS|{params_err}", log_stream.getvalue()
-        # ----------------------------------------------
+            return f"⚠️ SIN RESULTADOS|{params_err}", log_stream.getvalue(), None
 
         # Paso 2: Excel
         descargar_excel(driver, wait)
@@ -202,24 +298,35 @@ def ejecutar_scrapping(id_proyecto, nombre_proyecto, titular, fecha_presentacion
         blob_ficha.content_disposition = 'attachment; filename="ficha_principal.html"'
         blob_ficha.upload_from_string(driver.page_source, content_type='text/html')
 
-        # Paso 4: Loop de documentos
-        num_docs = procesar_documentos_detalle(driver, wait, bucket, id_proyecto, ventana_busqueda, ventana_ficha)
+        # Paso 4: Procesar documentos de la ficha principal
+        num_docs_ficha = procesar_documentos_detalle(driver, wait, bucket, id_proyecto, ventana_busqueda, ventana_ficha)
+
+        # NUEVO Paso 4.5: Procesar el expediente de evaluación (nueva función)
+        num_docs_expediente, fecha_max_expediente = procesar_expediente_evaluacion(driver, wait, bucket, id_proyecto, ventana_busqueda, ventana_ficha)
+        # Sumamos ambos conteos
+        total_docs = num_docs_ficha + num_docs_expediente
 
         # Paso 5: Subir Excel descargado
+        excel_local_path = None
         for f in os.listdir(download_dir):
             if f.endswith(".xlsx"):
+                excel_local_path = os.path.join(download_dir, f)
                 blob_xlsx = bucket.blob(f"{id_proyecto}/{f}")
                 blob_xlsx.content_disposition = f'attachment; filename="{f}"'
-                blob_xlsx.upload_from_filename(os.path.join(download_dir, f))
-                os.remove(os.path.join(download_dir, f))
+                blob_xlsx.upload_from_filename(excel_local_path)
                 break
 
         ruta_gcs = f"gs://{bucket_name}/{id_proyecto}/"
         console_url = f"https://console.cloud.google.com/storage/browser/{bucket_name}/{id_proyecto}?project={storage_client.project}"
         
-        return f"✅ EXITOSO|Excel Procesado|{ruta_gcs}|{console_url}|{num_docs}", log_stream.getvalue()
+        # Retornamos el total consolidado de documentos
+        res_str = f"✅ EXITOSO|{ruta_gcs}|{console_url}|{total_docs}"
+        return res_str, log_stream.getvalue(), excel_local_path
 
-    except Exception:
-        return f"❌ FALLO|{traceback.format_exc()}", log_stream.getvalue()
+    except Exception as e:
+        if driver:
+            error_img = f"error_{id_proyecto}.png"
+            driver.save_screenshot(error_img)
+        return f"❌ ERROR: {str(e)}", log_stream.getvalue(), None
     finally:
         if driver: driver.quit()
