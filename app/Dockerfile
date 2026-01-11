@@ -1,5 +1,7 @@
 FROM python:3.9-slim
 
+ENV PYTHONUNBUFFERED=1
+
 # Instalación de dependencias del sistema y Google Chrome
 RUN apt-get update && apt-get install -y \
     wget \

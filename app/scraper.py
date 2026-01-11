@@ -13,6 +13,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from google.cloud import storage
 from bs4 import BeautifulSoup
 import pandas as pd
+import sys
 # ==========================================
 # 1. UTILIDADES Y CONFIGURACIÓN
 # ==========================================
@@ -21,10 +22,23 @@ def obtener_logger():
     log_stream = io.StringIO()
     logger = logging.getLogger("scraper")
     logger.setLevel(logging.INFO)
-    if not logger.handlers:
-        handler = logging.StreamHandler(log_stream)
-        logger.addHandler(handler)
+    
+    # Limpiamos handlers anteriores para evitar duplicados si se reusa
+    if logger.handlers:
+        logger.handlers = []
+
+    # 1. ESTO YA LO TENÍAS (Guarda el log en memoria para tu reporte final)
+    handler_memoria = logging.StreamHandler(log_stream)
+    logger.addHandler(handler_memoria)
+
+    # 2. AGREGA ESTO (Manda una COPIA del log a la consola de Cloud Run)
+    handler_consola = logging.StreamHandler(sys.stdout) # <--- Mágica línea 1
+    logger.addHandler(handler_consola)                  # <--- Mágica línea 2
+
     return logger, log_stream
+
+
+
 
 def limpiar_nombre_archivo(nombre):
     nombre = re.sub(r'[\\/*?:"<>|]', "", nombre)
@@ -32,8 +46,8 @@ def limpiar_nombre_archivo(nombre):
 
 def configurar_driver(download_dir):
     options = Options()
-    #options.add_argument('--headless=new') # Descomentar para Cloud Run
-    #options.add_argument('--no-sandbox')
+    options.add_argument('--headless=new') # Descomentar para Cloud Run
+    options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-gpu')
     options.add_argument('--window-size=1920,1080')
@@ -139,101 +153,106 @@ from bs4 import BeautifulSoup
 import pandas as pd
 
 def procesar_expediente_evaluacion(driver, wait, bucket, id_proyecto, v_busqueda, v_ficha):
+    # flush=True OBLIGA a que el log aparezca INMEDIATAMENTE en Cloud Run
+    print(f"🚀 [INICIO] Ejecutando scraper para ID: {id_proyecto}", flush=True)
     logger = logging.getLogger("scraper")
-    fecha_maxima_exp = None  # Variable para guardar la fecha
     
     try:
         # 1. Navegar a la pestaña Expediente
+        print("📍 [PASO 1] Buscando pestaña 'Expediente'...", flush=True)
         tab_xpath = "//a[contains(@href, 'listadoExpediente') or contains(text(), 'Expediente')]"
-        tab_boton = wait.until(EC.element_to_be_clickable((By.XPATH, tab_xpath)))
-        driver.execute_script("arguments[0].click();", tab_boton)
-        time.sleep(6) 
-
-        # 2. Localizar Tabla (Lógica de test.py con Iframes)
-        tabla_obj = None
+        
         try:
-            tabla_obj = wait.until(EC.presence_of_element_located((By.XPATH, "//table")))
-        except:
-            iframes = driver.find_elements(By.TAG_NAME, "iframe")
-            for i, frame in enumerate(iframes):
-                driver.switch_to.frame(frame)
-                tablas_internas = driver.find_elements(By.TAG_NAME, "table")
-                if tablas_internas:
-                    tabla_obj = tablas_internas[0]
-                    break
-                driver.switch_to.default_content()
-
-        if not tabla_obj:
-            logger.warning("No se encontró la tabla de expediente.")
+            # Esperamos el botón
+            tab_boton = wait.until(EC.element_to_be_clickable((By.XPATH, tab_xpath)))
+            print("📍 [PASO 1] Botón encontrado. Click...", flush=True)
+            driver.execute_script("arguments[0].click();", tab_boton)
+        except Exception as e_click:
+            print(f"❌ [ERROR FATAL] Falló click en pestaña Expediente: {e_click}", flush=True)
+            # Intento de subir evidencia
+            try:
+                bucket.blob(f"{id_proyecto}/debug/ERROR_CLICK_PESTAÑA.txt").upload_from_string(str(e_click))
+            except: pass
             return 0, None
 
-        # 3. Extraer HTML y Calcular Fecha Máxima (Columna 7)
-        codigo_html = tabla_obj.get_attribute('outerHTML')
-        df = pd.read_html(io.StringIO(codigo_html))[0]
-        fechas_col = pd.to_datetime(df.iloc[:, 6], dayfirst=True, errors='coerce')
-        fecha_maxima_exp = fechas_col.max()
-        
-        f_max_log = fecha_maxima_exp.strftime('%d/%m/%Y') if not pd.isnull(fecha_maxima_exp) else "N/A"
-        logger.info(f"📅 FECHA MÁXIMA ENCONTRADA: {f_max_log}")
+        print("⏳ [ESPERA] 10 segundos para carga...", flush=True)
+        time.sleep(10) 
 
-        # 4. Preparar sesión de descarga
+        # ====================================================================
+        # LOG VISUAL (CON FLUSH)
+        # ====================================================================
+        print(f"📸 [LOG] Generando LOG_1_VISTA_EXPEDIENTE.txt...", flush=True)
+        try:
+            debug_html = driver.page_source
+            ruta_blob = f"{id_proyecto}/debug/LOG_1_VISTA_EXPEDIENTE.txt"
+            
+            blob = bucket.blob(ruta_blob)
+            blob.upload_from_string(debug_html, content_type='text/plain')
+            
+            print(f"✅ [LOG] ¡ÉXITO! HTML guardado en bucket.", flush=True)
+        except Exception as e_log:
+            print(f"❌ [LOG] Error subiendo log al bucket: {e_log}", flush=True)
+        # ====================================================================
+
+        # 2. ENTRAR AL IFRAME (Si existe)
+        # Tu caso 'no_funciono.txt' no tiene iframe, así que esto fallará rápido y seguirá.
+        print("📍 [PASO 2] Buscando iframe...", flush=True)
+        try:
+            iframe = driver.find_element(By.XPATH, "//iframe[contains(@src, 'xhr_expediente')]")
+            driver.switch_to.frame(iframe)
+            print("✅ [PASO 2] Entramos al Iframe.", flush=True)
+        except:
+            print("ℹ️ [PASO 2] No hay iframe. Buscando en principal.", flush=True)
+
+        # 3. BUSCAR BOTÓN XML
+        print("📍 [PASO 3] Buscando botón XML...", flush=True)
+        link_xml = None
+        try:
+            btn_xml = driver.find_element(By.XPATH, "//a[contains(@href, 'getXmlFile') or contains(@class, 'button_1')]")
+            link_xml = btn_xml.get_attribute('href')
+        except:
+            pass
+
+        # 4. PROCESAR
+        if not link_xml:
+            print(f"⚠️ [RESULTADO] NO se encontró botón XML (Caso esperado en algunos exp).", flush=True)
+            
+            # Dejamos constancia
+            try:
+                bucket.blob(f"{id_proyecto}/expediente/AVISO_NO_EXISTE_XML.txt").upload_from_string("Sin botón XML.")
+            except: pass
+            
+            driver.switch_to.default_content()
+            return 1, None
+
+        print(f"✅ [PASO 3] Enlace XML: {link_xml}", flush=True)
+
+        # 5. DESCARGAR XML
+        driver.switch_to.default_content()
+        
         session = requests.Session()
+        ua = driver.execute_script("return navigator.userAgent;")
+        session.headers.update({"User-Agent": ua})
         for c in driver.get_cookies(): session.cookies.set(c['name'], c['value'])
 
-        # 5. Iterar filas para descargas
-        soup = BeautifulSoup(codigo_html, 'html.parser')
-        filas = soup.find_all('tr')
-        docs_ok = 0
+        print("📍 [PASO 4] Descargando archivo...", flush=True)
+        res_xml = session.get(link_xml, timeout=60, verify=False)
 
-        for fila in filas:
-            columnas = fila.find_all('td')
-            if not columnas: continue
+        if res_xml.status_code == 200:
+            nombre_archivo = f"Expediente_{id_proyecto}.xml"
+            blob = bucket.blob(f"{id_proyecto}/expediente/{nombre_archivo}")
+            blob.content_disposition = f'attachment; filename="{nombre_archivo}"'
+            blob.upload_from_string(res_xml.content, content_type='text/xml')
             
-            id_fila = columnas[0].get_text(strip=True)
-            link = fila.find('a')
-            if not link or not link.get('href', '').startswith('https'):
-                continue
-
-            url_doc = link.get('href')
-            nombre_doc = link.get_text(strip=True) or (link.find('img').get('title') if link.find('img') else "documento")
-            nombre_final = f"EXP_{id_fila}_{limpiar_nombre_archivo(nombre_doc)}"
-
-            try:
-                # Metodología A: PDF/Requests
-                if ".pdf" in url_doc.lower() or "bajar" in url_doc.lower():
-                    res = session.get(url_doc, timeout=30)
-                    blob = bucket.blob(f"{id_proyecto}/expediente/{nombre_final}.pdf")
-                    blob.content_disposition = f'attachment; filename="{nombre_final}.pdf"'
-
-                    blob.upload_from_string(res.content, content_type='application/pdf')
-                    docs_ok += 1
-                
-                # Metodología B: HTML/Selenium
-                else:
-                    driver.execute_script(f"window.open('{url_doc}', '_blank');")
-                    driver.switch_to.window(driver.window_handles[-1])
-                    time.sleep(5)
-                    html_src = driver.page_source
-                    blob = bucket.blob(f"{id_proyecto}/expediente/{nombre_final}.html")
-
-                    blob.content_disposition = f'attachment; filename="{nombre_final}.html"'
-
-                    blob.upload_from_string(html_src, content_type='text/html')
-                    docs_ok += 1
-                    driver.close()
-                    driver.switch_to.window(v_ficha)
-                    # Intentar re-entrar al iframe por si se perdió el foco
-                    try: driver.switch_to.frame(driver.find_elements(By.TAG_NAME, "iframe")[0])
-                    except: pass
-            except Exception as e:
-                logger.error(f"Error en {nombre_final}: {e}")
-                if len(driver.window_handles) > 2: driver.close()
-                driver.switch_to.window(v_ficha)
-
-        return docs_ok, fecha_maxima_exp
+            print(f"✅ [FIN] XML guardado: {nombre_archivo}", flush=True)
+            return 1, None
+        else:
+            print(f"❌ [ERROR] Falló descarga HTTP: {res_xml.status_code}", flush=True)
+            return 0, None
 
     except Exception as e:
-        logger.error(f"Fallo en expediente: {e}")
+        print(f"❌ [CRASH] Excepción NO controlada: {e}", flush=True)
+        traceback.print_exc()
         return 0, None
     
 # ==========================================
