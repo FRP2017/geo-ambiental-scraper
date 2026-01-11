@@ -67,6 +67,7 @@ resource "google_project_iam_member" "perms" {
   for_each = toset([
     "roles/bigquery.jobUser",
     "roles/bigquery.dataViewer",
+    "roles/bigquery.dataEditor",
     "roles/logging.logWriter",
     "roles/storage.objectAdmin" 
   ])
@@ -107,7 +108,7 @@ resource "google_cloud_run_v2_service" "app" {
       
       resources {
         limits = {
-          cpu    = "4"
+          cpu    = "2"
           memory = "8Gi"
         }
       }
