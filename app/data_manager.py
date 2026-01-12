@@ -98,7 +98,7 @@ def actualizar_desde_excel(client, table_path, id_interno, excel_path):
                 set_clauses.append(f"{bq_col} = '{val_str}'")
 
         # Agregar timestamp de actualización
-        set_clauses.append("fecha_actualizacion = CURRENT_TIMESTAMP()")
+        set_clauses.append("fecha_actualizacion = TIMESTAMP(CURRENT_DATETIME('America/Santiago'))")
 
         # 2. Ejecutar Update
         query = f"UPDATE `{table_path}` SET {', '.join(set_clauses)} WHERE id = '{id_interno}'"

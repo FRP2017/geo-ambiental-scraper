@@ -84,7 +84,7 @@ if st.session_state.df_resultados is not None:
                                                                 nombre_limpio, 
                                                                 row['titular'], 
                                                                 row['fecha_presentacion'], 
-                                                                row['fecha_calificacion'], 
+                
                                                                 BUCKET_NAME
                                                             )
                     # --- NUEVO BLOQUE DE LÓGICA DE RESULTADOS ---

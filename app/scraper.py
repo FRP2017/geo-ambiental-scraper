@@ -71,7 +71,7 @@ def configurar_driver(download_dir):
 # 2. ACCIONES DE NAVEGACIÓN (SEIA)
 # ==========================================
 
-def realizar_busqueda(driver, wait, nombre, titular, f_pres, f_cal):
+def realizar_busqueda(driver, wait, nombre, titular, f_pres):
     driver.get("https://seia.sea.gob.cl/busqueda/buscarProyecto.php")
     
     wait.until(EC.presence_of_element_located((By.ID, "projectName"))).send_keys(nombre)
@@ -79,9 +79,6 @@ def realizar_busqueda(driver, wait, nombre, titular, f_pres, f_cal):
     driver.find_element(By.ID, "startDateFechaP").send_keys(f_pres)
     driver.find_element(By.ID, "endDateFechaP").send_keys(f_pres)
 
-    if f_cal:
-        driver.find_element(By.ID, "startDateFechaC").send_keys(f_cal)
-        driver.find_element(By.ID, "endDateFechaC").send_keys(f_cal)
     
     time.sleep(2)
     boton = driver.find_element(By.CSS_SELECTOR, "button.sg-btnForm")
@@ -259,7 +256,7 @@ def procesar_expediente_evaluacion(driver, wait, bucket, id_proyecto, v_busqueda
 # 4. FUNCIÓN PRINCIPAL (ORQUESTADOR)
 # ==========================================
 
-def ejecutar_scrapping(id_proyecto, nombre_proyecto, titular, fecha_presentacion, fecha_calificacion, bucket_name="almacen_antecedentes"):
+def ejecutar_scrapping(id_proyecto, nombre_proyecto, titular, fecha_presentacion, bucket_name="almacen_antecedentes"):
     """
     CONTRATO: Esta función mantiene los 6 argumentos requeridos por app.py
     """
@@ -269,7 +266,6 @@ def ejecutar_scrapping(id_proyecto, nombre_proyecto, titular, fecha_presentacion
     try:
         # Preparación de fechas y entorno
         fecha_p_str = fecha_presentacion.strftime('%d/%m/%Y') if hasattr(fecha_presentacion, 'strftime') else str(fecha_presentacion)
-        fecha_c_str = fecha_calificacion.strftime('%d/%m/%Y') if fecha_calificacion else ""
         
         download_dir = "/tmp" if os.environ.get("K_SERVICE") else os.path.join(os.getcwd(), "downloads")
         if not os.path.exists(download_dir): os.makedirs(download_dir)
@@ -281,7 +277,7 @@ def ejecutar_scrapping(id_proyecto, nombre_proyecto, titular, fecha_presentacion
         wait = WebDriverWait(driver, 20)
 
         # Paso 1: Búsqueda
-        realizar_busqueda(driver, wait, nombre_proyecto, titular, fecha_p_str, fecha_c_str)
+        realizar_busqueda(driver, wait, nombre_proyecto, titular, fecha_p_str)
         ventana_busqueda = driver.current_window_handle
 
         # --- DETECCIÓN DE TABLA VACÍA ---
@@ -292,8 +288,7 @@ def ejecutar_scrapping(id_proyecto, nombre_proyecto, titular, fecha_presentacion
                 f"2. **Titular:** {titular}\n"
                 f"3. **F. Presentación:** {fecha_p_str}\n"
             )
-            if fecha_c_str: params_err += f"4. **F. Calificación:** {fecha_c_str}"
-            else: params_err += "4. **F. Calificación:** (No provista)"
+
             
             return f"⚠️ SIN RESULTADOS|{params_err}", log_stream.getvalue(), None
 
