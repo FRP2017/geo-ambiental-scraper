@@ -103,9 +103,17 @@ resource "google_cloud_run_v2_service" "app" {
     timeout = "900s"
     max_instance_request_concurrency = 1
     service_account = google_service_account.app_sa.email
+    
     containers {
       image = "${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/streamlit-app:latest"
       
+      # --- ESTO ES LO QUE SOLUCIONA EL PROBLEMA ---
+      env {
+        name  = "CODE_VERSION"
+        value = null_resource.build_and_push_image.triggers.dir_hash
+      }
+      # --------------------------------------------
+
       resources {
         limits = {
           cpu    = "2"
@@ -117,14 +125,7 @@ resource "google_cloud_run_v2_service" "app" {
         name  = "PROJECT_ID"
         value = var.project_id
       }
-      env {
-        name  = "BUCKET_NAME"
-        value = var.bucket_name
-      }
-      env {
-        name  = "BQ_TABLE_PATH"
-        value = var.bq_source_table
-      }
+      # ... (resto de tus variables de entorno)
     }
   }
 
