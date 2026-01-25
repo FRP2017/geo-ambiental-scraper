@@ -150,108 +150,160 @@ from bs4 import BeautifulSoup
 import pandas as pd
 
 def procesar_expediente_evaluacion(driver, wait, bucket, id_proyecto, v_busqueda, v_ficha):
-    # flush=True OBLIGA a que el log aparezca INMEDIATAMENTE en Cloud Run
-    print(f"🚀 [INICIO] Ejecutando scraper para ID: {id_proyecto}", flush=True)
-    logger = logging.getLogger("scraper")
+    """
+    1. Obtiene ID SEIA desde URL.
+    2. Descarga Tabla.
+    3. Itera documentos:
+       - Si es PDF -> Guarda .pdf
+       - Si no es PDF -> Guarda el código fuente como .html
+    4. Sube Excel índice.
+    """
+    print(f"🚀 [INICIO] Descarga Híbrida (PDF/HTML) para: {id_proyecto}", flush=True)
     
+    # --- 1. OBTENER ID SEIA ---
     try:
-        # 1. Navegar a la pestaña Expediente
-        print("📍 [PASO 1] Buscando pestaña 'Expediente'...", flush=True)
-        tab_xpath = "//a[contains(@href, 'listadoExpediente') or contains(text(), 'Expediente')]"
+        if driver.current_window_handle != v_ficha:
+            driver.switch_to.window(v_ficha)
         
-        try:
-            # Esperamos el botón
-            tab_boton = wait.until(EC.element_to_be_clickable((By.XPATH, tab_xpath)))
-            print("📍 [PASO 1] Botón encontrado. Click...", flush=True)
-            driver.execute_script("arguments[0].click();", tab_boton)
-        except Exception as e_click:
-            print(f"❌ [ERROR FATAL] Falló click en pestaña Expediente: {e_click}", flush=True)
-            # Intento de subir evidencia
-            try:
-                bucket.blob(f"{id_proyecto}/debug/ERROR_CLICK_PESTAÑA.txt").upload_from_string(str(e_click))
-            except: pass
-            return 0, None
-
-        print("⏳ [ESPERA] 10 segundos para carga...", flush=True)
-        time.sleep(10) 
-
-        # ====================================================================
-        # LOG VISUAL (CON FLUSH)
-        # ====================================================================
-        print(f"📸 [LOG] Generando LOG_1_VISTA_EXPEDIENTE.txt...", flush=True)
-        try:
-            debug_html = driver.page_source
-            ruta_blob = f"{id_proyecto}/debug/LOG_1_VISTA_EXPEDIENTE.txt"
-            
-            blob = bucket.blob(ruta_blob)
-            blob.upload_from_string(debug_html, content_type='text/plain')
-            
-            print(f"✅ [LOG] ¡ÉXITO! HTML guardado en bucket.", flush=True)
-        except Exception as e_log:
-            print(f"❌ [LOG] Error subiendo log al bucket: {e_log}", flush=True)
-        # ====================================================================
-
-        # 2. ENTRAR AL IFRAME (Si existe)
-        # Tu caso 'no_funciono.txt' no tiene iframe, así que esto fallará rápido y seguirá.
-        print("📍 [PASO 2] Buscando iframe...", flush=True)
-        try:
-            iframe = driver.find_element(By.XPATH, "//iframe[contains(@src, 'xhr_expediente')]")
-            driver.switch_to.frame(iframe)
-            print("✅ [PASO 2] Entramos al Iframe.", flush=True)
-        except:
-            print("ℹ️ [PASO 2] No hay iframe. Buscando en principal.", flush=True)
-
-        # 3. BUSCAR BOTÓN XML
-        print("📍 [PASO 3] Buscando botón XML...", flush=True)
-        link_xml = None
-        try:
-            btn_xml = driver.find_element(By.XPATH, "//a[contains(@href, 'getXmlFile') or contains(@class, 'button_1')]")
-            link_xml = btn_xml.get_attribute('href')
-        except:
-            pass
-
-        # 4. PROCESAR
-        if not link_xml:
-            print(f"⚠️ [RESULTADO] NO se encontró botón XML (Caso esperado en algunos exp).", flush=True)
-            
-            # Dejamos constancia
-            try:
-                bucket.blob(f"{id_proyecto}/expediente/AVISO_NO_EXISTE_XML.txt").upload_from_string("Sin botón XML.")
-            except: pass
-            
-            driver.switch_to.default_content()
-            return 1, None
-
-        print(f"✅ [PASO 3] Enlace XML: {link_xml}", flush=True)
-
-        # 5. DESCARGAR XML
-        driver.switch_to.default_content()
+        url_actual = driver.current_url
+        match = re.search(r"id_expediente=(\d+)", url_actual)
         
-        session = requests.Session()
-        ua = driver.execute_script("return navigator.userAgent;")
-        session.headers.update({"User-Agent": ua})
-        for c in driver.get_cookies(): session.cookies.set(c['name'], c['value'])
-
-        print("📍 [PASO 4] Descargando archivo...", flush=True)
-        res_xml = session.get(link_xml, timeout=60, verify=False)
-
-        if res_xml.status_code == 200:
-            nombre_archivo = f"Expediente_{id_proyecto}.xml"
-            blob = bucket.blob(f"{id_proyecto}/expediente/{nombre_archivo}")
-            blob.content_disposition = f'attachment; filename="{nombre_archivo}"'
-            blob.upload_from_string(res_xml.content, content_type='text/xml')
-            
-            print(f"✅ [FIN] XML guardado: {nombre_archivo}", flush=True)
-            return 1, None
+        if match:
+            id_seia = match.group(1)
         else:
-            print(f"❌ [ERROR] Falló descarga HTTP: {res_xml.status_code}", flush=True)
+            print("   ⚠️ No se pudo extraer ID SEIA.", flush=True)
             return 0, None
+    except Exception as e:
+        print(f"   ❌ Error ID URL: {e}", flush=True)
+        return 0, None
+
+    # --- 2. PREPARAR SESIÓN ---
+    url_tabla = f"https://seia.sea.gob.cl/expediente/xhr_documentos.php?id_expediente={id_seia}"
+    session = requests.Session()
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        "Referer": url_actual
+    }
+    
+    for cookie in driver.get_cookies():
+        session.cookies.set(cookie['name'], cookie['value'])
+
+    try:
+        # --- 3. OBTENER LISTADO ---
+        print(f"   ⏳ Obteniendo listado: {url_tabla}...", flush=True)
+        response = session.get(url_tabla, headers=headers, timeout=30)
+        
+        if response.status_code != 200:
+            print(f"   ❌ Error HTTP {response.status_code}", flush=True)
+            return 0, None
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+        tabla = soup.find('table', {'id': 'tbldocumentos'})
+        
+        if not tabla:
+            return 0, None
+
+        datos = []
+        rows = tabla.find_all('tr')[1:] 
+
+        for tr in rows:
+            cols = tr.find_all('td')
+            if len(cols) < 7: continue
+            
+            try:
+                celda_doc = cols[3]
+                nombre_visual = celda_doc.get_text(strip=True)
+                link_tag = celda_doc.find('a')
+                fecha = cols[6].get_text(strip=True)
+                
+                enlace = ""
+                if link_tag and 'href' in link_tag.attrs:
+                    ruta = link_tag['href'].replace(r"\'", "").replace(r"'", "")
+                    enlace = ruta if ruta.startswith("http") else f"https://seia.sea.gob.cl{ruta}"
+
+                if enlace:
+                    datos.append({
+                        "Fecha": fecha,
+                        "Documento": nombre_visual,
+                        "Enlace": enlace
+                    })
+            except:
+                continue
+
+        print(f"   📊 Documentos detectados: {len(datos)}. Iniciando descarga...", flush=True)
+
+        # --- 4. DESCARGA INTELIGENTE (PDF vs HTML) ---
+        contador_exitos = 0
+        
+        for i, doc in enumerate(datos, 1):
+            url_archivo = doc['Enlace']
+            nombre_tabla = doc['Documento']
+            
+            # Limpiamos nombre de caracteres prohibidos
+            nombre_limpio = re.sub(r'[\\/*?:"<>|]', "", nombre_tabla).strip()
+            
+            print(f"      ⬇️ [{i}/{len(datos)}] Procesando: {nombre_limpio}...", flush=True)
+            
+            try:
+                # stream=True es vital para no cargar PDFs gigantes en memoria de golpe
+                res_file = session.get(url_archivo, headers=headers, stream=True, timeout=60)
+                
+                if res_file.status_code == 200:
+                    content_type = res_file.headers.get('Content-Type', '').lower()
+                    
+                    # LOGICA DE DECISIÓN
+                    if 'pdf' in content_type:
+                        # ES PDF
+                        extension = ".pdf"
+                        mime_type = 'application/pdf'
+                        contenido = res_file.content # Binario
+                    else:
+                        # NO ES PDF -> ASUMIMOS HTML (Extraer código)
+                        extension = ".html"
+                        mime_type = 'text/html; charset=utf-8'
+                        # Usamos .content para obtener los bytes crudos y que no se rompan los acentos
+                        contenido = res_file.content 
+                    
+                    # Evitar duplicar extensión si el nombre ya la trae
+                    if nombre_limpio.lower().endswith(extension):
+                        nombre_final = f"{i:03d}_{nombre_limpio}"
+                    else:
+                        nombre_final = f"{i:03d}_{nombre_limpio}{extension}"
+                    
+                    # Subir a GCS
+                    ruta_blob = f"{id_proyecto}/expediente_docs/{nombre_final}"
+                    blob_file = bucket.blob(ruta_blob)
+                    blob_file.upload_from_string(contenido, content_type=mime_type)
+                    
+                    contador_exitos += 1
+                else:
+                    print(f"      ⚠️ Link roto ({res_file.status_code})", flush=True)
+
+            except Exception as e:
+                print(f"      ⚠️ Error descargando {i}: {e}", flush=True)
+                continue
+
+        # --- 5. GENERAR INDICE EXCEL ---
+        if datos:
+            df = pd.DataFrame(datos)
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                df.to_excel(writer, index=False)
+            output.seek(0)
+            
+            nombre_indice = f"Indice_Expediente_{id_seia}.xlsx"
+            blob_idx = bucket.blob(f"{id_proyecto}/expediente/{nombre_indice}")
+            blob_idx.upload_from_string(output.getvalue(), content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+            
+            return len(datos), None
+
+        return 0, None
 
     except Exception as e:
-        print(f"❌ [CRASH] Excepción NO controlada: {e}", flush=True)
+        print(f"   ❌ Error General: {e}", flush=True)
         traceback.print_exc()
         return 0, None
-    
 # ==========================================
 # 4. FUNCIÓN PRINCIPAL (ORQUESTADOR)
 # ==========================================

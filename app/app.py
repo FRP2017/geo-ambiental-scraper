@@ -54,14 +54,34 @@ if st.session_state.df_resultados is not None:
             f_reg = st.multiselect("Región", sorted(st.session_state.df_resultados['region'].dropna().unique()))
             f_com = st.multiselect("Comuna", sorted(st.session_state.df_resultados['comuna'].dropna().unique()))
         
+        # --- CÁLCULO SEGURO PARA SLIDERS (EVITAR ERROR min==max) ---
+        min_inv = float(st.session_state.df_resultados['inversion_mmu'].min())
+        max_inv = float(st.session_state.df_resultados['inversion_mmu'].max())
+        if min_inv == max_inv:
+            min_slider_inv = max(0.0, min_inv - 1.0)
+            max_slider_inv = max_inv + 1.0
+        else:
+            min_slider_inv = min_inv
+            max_slider_inv = max_inv
+
+        min_dist = float(st.session_state.df_resultados['distancia_km'].min())
+        max_dist = float(st.session_state.df_resultados['distancia_km'].max())
+        if min_dist == max_dist:
+            min_slider_dist = max(0.0, min_dist - 1.0)
+            max_slider_dist = max_dist + 1.0
+        else:
+            min_slider_dist = min_dist
+            max_slider_dist = max_dist
+        # -----------------------------------------------------------
+
         filtros = {
             'region': f_reg, 'comuna': f_com, 
             'provincia': st.multiselect("Provincia", sorted(st.session_state.df_resultados['provincia'].dropna().unique())),
             'tipo': st.multiselect("Tipo Proyecto", sorted(st.session_state.df_resultados['tipo_proyecto'].dropna().unique())),
             'titular': st.multiselect("Titular", sorted(st.session_state.df_resultados['titular'].dropna().unique())),
             'estado': st.multiselect("Estado", sorted(st.session_state.df_resultados['estado_proyecto'].dropna().unique())),
-            'inversion': st.slider("Inversión MMU", float(st.session_state.df_resultados['inversion_mmu'].min()), float(st.session_state.df_resultados['inversion_mmu'].max()), (float(st.session_state.df_resultados['inversion_mmu'].min()), float(st.session_state.df_resultados['inversion_mmu'].max()))),
-            'distancia': st.slider("Distancia Km", float(st.session_state.df_resultados['distancia_km'].min()), float(st.session_state.df_resultados['distancia_km'].max()), (float(st.session_state.df_resultados['distancia_km'].min()), float(st.session_state.df_resultados['distancia_km'].max())))
+            'inversion': st.slider("Inversión MMU", min_value=min_slider_inv, max_value=max_slider_inv, value=(min_inv, max_inv)),
+            'distancia': st.slider("Distancia Km", min_value=min_slider_dist, max_value=max_slider_dist, value=(min_dist, max_dist))
         }
 
     df_f = dm.filtrar_dataframe(st.session_state.df_resultados, filtros)
