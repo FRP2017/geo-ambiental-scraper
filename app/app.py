@@ -105,7 +105,9 @@ if st.session_state.df_resultados is not None:
                                                                 row['titular'], 
                                                                 row['fecha_presentacion'], 
                 
-                                                                BUCKET_NAME
+                                                                BUCKET_NAME,
+                                                                region=row['region'],  # NUEVO: Pasamos la región
+                                                                comuna=row['comuna']   # NUEVO: Pasamos la comuna
                                                             )
                     # --- NUEVO BLOQUE DE LÓGICA DE RESULTADOS ---
                     if "✅ EXITOSO" in res:
