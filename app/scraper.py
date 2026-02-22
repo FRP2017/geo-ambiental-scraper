@@ -15,8 +15,7 @@ from bs4 import BeautifulSoup
 import pandas as pd
 import sys
 import json  # NUEVO IMPORT
-from bs4 import BeautifulSoup
-import pandas as pd
+
 
 # ==========================================
 # 1. UTILIDADES Y CONFIGURACIÓN
@@ -433,9 +432,18 @@ def ejecutar_scrapping(id_proyecto, nombre_proyecto, titular, fecha_presentacion
         return f"✅ EXITOSO|{ruta_gcs}|{console_url}|{total_docs}", log_stream.getvalue(), excel_local_path
 
     except Exception as e:
+        # Imprimimos en consola para depurar si app.py se cuelga
+        print(f"   [SCRAPER ERROR] {str(e)}", flush=True)
         if driver:
             try: driver.save_screenshot(f"error_{id_proyecto}.png")
             except: pass
         return f"❌ ERROR: {str(e)}", log_stream.getvalue(), None
+    
     finally:
-        if driver: driver.quit()
+        # --- MODIFICACIÓN 2: Cierre seguro del proceso ---
+        if driver:
+            try:
+                driver.quit()
+                print("   [SCRAPER] Driver cerrado correctamente.", flush=True)
+            except Exception as final_e:
+                print(f"   [SCRAPER] Error forzando cierre del driver: {final_e}", flush=True)
